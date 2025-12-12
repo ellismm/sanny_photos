@@ -4,7 +4,7 @@
 
   // 🔥 Replace with your real web config (the one that has apiKey starting with AIza...)
   const firebaseConfig = {
-    apiKey: "AIzaSyAO5yVPfxDZNXZ9Y8O63j6bc8badFprUm4",
+    apiKey: "...your_api_key_here...",
     authDomain: "sanny-photos.firebaseapp.com",
     databaseURL: "https://sanny-photos-default-rtdb.firebaseio.com",
     projectId: "sanny-photos",
