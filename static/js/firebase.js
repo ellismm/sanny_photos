@@ -10,7 +10,7 @@
     projectId: "sanny-photos",
     storageBucket: "sanny-photos.appspot.com",
     messagingSenderId: "126021881027",
-    appId: "1:126021881027:web:6f4023e76816b26601a676"
+    appId: "...your_app_id_here..."
   };
 
   // Initialize Firebase app
