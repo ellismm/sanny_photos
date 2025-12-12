@@ -1,41 +1,32 @@
 import subprocess
 import threading
-import shutil
-import signal
 import logging
-import os; 
+import os
+import signal
+from yt_dlp import YoutubeDL
 
-os.environ.update({k:v for k,v in {
-    "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}",
-    "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{os.getuid()}/bus",
-    "PULSE_SERVER": f"unix:/run/user/{os.getuid()}/pulse/native",
-    "DISPLAY": ":1"   # 👈 match your actual session
-}.items() if v and os.path.exists(v.split('=')[-1].split(':')[-1].split('/')[1] if '/' in v else "/run/user")})
+logging.basicConfig(level=logging.INFO)
 
-# import sys
-# logging.info(f"PATH in this process: {os.environ.get('PATH')}")
-# logging.info(f"Python executable: {sys.executable}")
-
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-class MpvPlayer:
-    def __init__(self, default_volume=80):
-        self.proc = None
-        self.muted = False
-        # --- inside class MpvPlayer.__init__ ---
-        self.paused = False
-
-        self.default_volume = default_volume
+class MPVPlayer:
+    def __init__(self):
+        self.process = None
+        self.playlist = []
+        self.current_index = 0
+        self.is_muted = False
+        self.is_paused = False
         self.lock = threading.Lock()
+
         self.mpv_path = "/usr/bin/mpv"
+        self.ytdlp_path = "/usr/bin/yt-dlp"
 
-        if not shutil.which(self.mpv_path):
-            raise RuntimeError(f"mpv not found at {self.mpv_path}")
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-    def _spawn(self, media_url: str):
-        logging.info(f"Starting mpv for: {media_url}")
-        args = [
+    def _start_mpv(self, url):
+        self.stop()
+
+        cmd = [
             self.mpv_path,
             "--no-video",
             "--ytdl",
@@ -43,119 +34,126 @@ class MpvPlayer:
             "--force-window=no",
             "--ao=pulse",
             "--cache=yes",
-            "--player-operation-mode=pseudo-gui",
-            f"--volume=80",
-            "--loop-file=no",
-            "--ytdl-raw-options=ignoreerrors=true",
-            f"--ytdl-raw-options=cookies={os.path.expanduser('~/coding/own/sanny_photos/ytdlp_cookies.txt')}",
-            media_url,
+            "--volume=80",
+            url
         ]
 
+        logging.info("Starting mpv: %s", " ".join(cmd))
 
-        env = os.environ.copy()
-        env.update({
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
-            "HOME": os.path.expanduser("~"),             # <--- critical for yt-dlp
-            "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}",
-            "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{os.getuid()}/bus",
-            "DISPLAY": os.environ.get("DISPLAY", ":1"),  # <--- helps PipeWire connect
-            "PULSE_SERVER": "unix:/run/user/1000/pulse/native"
-        })
+        self.process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid
+        )
 
-        log_path = "/tmp/mpv_debug.log"
-        logging.info(f"Writing mpv debug output to {log_path}")
-
-        try:
-            with open(log_path, "w", buffering=1) as logfile:
-                logfile.write(f"Launching mpv with args: {' '.join(args)}\n")
-
-                self.proc = subprocess.Popen(
-                    args,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                    close_fds=True,
-                    env=env,
-                )
-
-            logging.info(f"mpv started (PID {self.proc.pid})")
-
-        except Exception as e:
-            logging.error(f"Failed to start mpv: {e}", exc_info=True)
-            self.proc = None
-
-
-    def play(self, media_url: str):
-        logging.info("play() called")
-        self.stop()
-
-        # Launch mpv in a detached background thread
-        def runner():
-            try:
-                logging.info(f"Starting detached mpv thread for {media_url}")
-                self._spawn(media_url)
-            except Exception as e:
-                logging.error(f"Error launching mpv thread: {e}", exc_info=True)
-
-        t = threading.Thread(target=runner, daemon=True)
-        t.start()
-
-
-    def pause(self):
-        with self.lock:
-            if self.proc and self.proc.poll() is None and not self.paused:
-                logging.info("Pausing playback")
-                self.proc.send_signal(signal.SIGSTOP)
-                self.paused = True
-
-    def resume(self):
-        with self.lock:
-            if self.proc and self.proc.poll() is None and self.paused:
-                logging.info("Resuming playback")
-                self.proc.send_signal(signal.SIGCONT)
-                self.paused = False
-
-    def toggle_pause(self):
-        with self.lock:
-            if self.proc and self.proc.poll() is None:
-                if self.paused:
-                    self.proc.send_signal(signal.SIGCONT)
-                    self.paused = False
-                    logging.info("Resuming playback (toggle)")
-                else:
-                    self.proc.send_signal(signal.SIGSTOP)
-                    self.paused = True
-                    logging.info("Pausing playback (toggle)")
-
-
+        self.is_paused = False
 
     def stop(self):
+        if self.process and self.process.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+            except Exception:
+                pass
+        self.process = None
+
+    # ------------------------------------------------------------------
+    # Playlist handling
+    # ------------------------------------------------------------------
+
+    def load_playlist(self, playlist_url):
+        logging.info("Loading playlist: %s", playlist_url)
+
+        ydl_opts = {
+            "quiet": True,
+            "extract_flat": True,
+            "skip_download": True,
+            "forcejson": True,
+        }
+
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(playlist_url, download=False)
+
+        entries = info.get("entries", [])
+        self.playlist = []
+
+        for e in entries:
+            if not e:
+                continue
+            self.playlist.append({
+                "title": e.get("title"),
+                "url": f"https://www.youtube.com/watch?v={e.get('id')}"
+            })
+
+        self.current_index = 0
+        return self.playlist
+
+    # ------------------------------------------------------------------
+    # Playback controls
+    # ------------------------------------------------------------------
+
+    def play_index(self, index):
         with self.lock:
-            if self.proc and self.proc.poll() is None:
-                logging.info("Stopping current mpv process")
-                self.proc.terminate()
-                try:
-                    self.proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    logging.warning("mpv did not exit cleanly; killing")
-                    self.proc.kill()
-            self.proc = None
+            if not self.playlist:
+                raise RuntimeError("Playlist is empty")
 
-    def set_mute(self, mute: bool):
-        with self.lock:
-            if mute == self.muted:
-                return
-            self.muted = mute
-            if self.proc and self.proc.poll() is None:
-                if mute:
-                    logging.info("Muting (pause via SIGSTOP)")
-                    self.proc.send_signal(signal.SIGSTOP)
-                else:
-                    logging.info("Unmuting (resume via SIGCONT)")
-                    self.proc.send_signal(signal.SIGCONT)
+            self.current_index = index % len(self.playlist)
+            track = self.playlist[self.current_index]
 
-    def is_running(self):
-        return self.proc and self.proc.poll() is None
+            self._start_mpv(track["url"])
 
-player = MpvPlayer(default_volume=80)
+            return {
+                "index": self.current_index,
+                "title": track["title"],
+                "url": track["url"]
+            }
+
+    def next_track(self):
+        return self.play_index(self.current_index + 1)
+
+    def prev_track(self):
+        return self.play_index(self.current_index - 1)
+
+    def toggle_pause(self):
+        if not self.process or self.process.poll() is not None:
+            return {"paused": False}
+
+        try:
+            if self.is_paused:
+                os.kill(self.process.pid, signal.SIGCONT)
+                self.is_paused = False
+            else:
+                os.kill(self.process.pid, signal.SIGSTOP)
+                self.is_paused = True
+        except Exception:
+            pass
+
+        return {"paused": self.is_paused}
+
+    def mute(self, mute=True):
+        self.is_muted = mute
+
+        if self.process and self.process.poll() is None:
+            vol = "0" if mute else "80"
+            subprocess.Popen([
+                self.mpv_path,
+                "--input-ipc-server=/tmp/mpv-socket",
+                f"--volume={vol}"
+            ])
+
+        return {"muted": self.is_muted}
+
+    # ------------------------------------------------------------------
+    # Status
+    # ------------------------------------------------------------------
+
+    def status(self):
+        return {
+            "ok": True,
+            "running": self.process is not None and self.process.poll() is None,
+            "paused": self.is_paused,
+            "muted": self.is_muted,
+            "index": self.current_index,
+            "track": self.playlist[self.current_index] if self.playlist else None
+        }
+    
