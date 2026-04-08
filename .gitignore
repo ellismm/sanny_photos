@@ -1,0 +1,43 @@
+# Local environment and device config
+device.env
+.env*
+
+# Python virtual environments and caches
+env/
+venv/
+.env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OAuth credentials and local secrets
+creds/old_scripts/
+creds/old_secrets/
+old/
+**/token.json
+**/client_secret*.json
+**/*secret*.json
+ytdlp_cookies*.txt
+
+# Generated slideshow assets and sync state
+images/
+static/images/
+album.json
+static/album.json
+.drive_sync_index.json
+ops_backups/
+*.log
+*.pid
+*.sock
+
+# Local workspace/editor files
+.codex/
+.vscode/
+.idea/
+.DS_Store
+
+# Local artifacts
+2025_hightower_1098.pdf
+/*.png
