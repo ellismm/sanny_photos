@@ -1,3 +1,8 @@
+"""Legacy prototype kept for reference only.
+
+Run app.py for the current slideshow server.
+"""
+
 from flask import Flask, render_template_string, jsonify, request
 from flask_cors import CORS
 import os, json, logging
@@ -527,4 +532,3 @@ def music_mute():
 # -----------------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=False)
-

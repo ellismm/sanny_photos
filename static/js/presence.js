@@ -1,33 +1,44 @@
 // static/js/presence.js
 (function () {
-  console.log("[presence.js] loaded");
-
-  if (!window.SannyFirebase) {
-    console.error("[presence.js] SannyFirebase not found");
-    return;
+  function now() {
+    return Date.now();
   }
 
-  window.SannyFirebase.onReady((ctx) => {
-    console.log("[presence.js] onReady called");
-    const { db, ROOM_ID, deviceID } = ctx;
+  function buildPresence(deviceId, online) {
+    return {
+      [deviceId]: {
+        online,
+        lastSeen: now()
+      }
+    };
+  }
 
-    const presenceRef = db.ref(`rooms/${ROOM_ID}/presence/${deviceID}`);
-
-    presenceRef.onDisconnect().set({
-      online: false,
-      lastSeen: firebase.database.ServerValue.TIMESTAMP
-    });
-
-    function touchPresence() {
-      presenceRef.set({
-        online: true,
-        lastSeen: firebase.database.ServerValue.TIMESTAMP
-      });
+  window.addEventListener("load", () => {
+    if (!window.SannySync) {
+      return;
     }
 
-    // initial + periodic heartbeat (60s)
-    touchPresence();
-    setInterval(touchPresence, 60000);
-    console.log("[presence.js] presence initialized");
+    window.SannySync.onReady((ctx) => {
+      const presenceStore = ctx.createStore("presence");
+
+      function touch(online) {
+        presenceStore.update(buildPresence(ctx.deviceId, online));
+      }
+
+      touch(true);
+      const intervalId = window.setInterval(() => touch(true), 60000);
+
+      window.addEventListener("beforeunload", () => touch(false));
+      window.addEventListener("pagehide", () => touch(false));
+      window.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          touch(true);
+        }
+      });
+
+      window.addEventListener("unload", () => {
+        window.clearInterval(intervalId);
+      });
+    });
   });
 })();
