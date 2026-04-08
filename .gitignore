@@ -1,39 +1,43 @@
-env
-# venv
-# old*
-# creds/token.json
-# creds/client_secrets.json
-# creds/old*
-# creds/client_id.json
-# images
-# static/images
-# static/album.json
-# 2025*
-# album.json
+# Local environment and device config
+device.env
+.env*
 
+# Python virtual environments and caches
+env/
+venv/
+.env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Google OAuth / credentials
-creds/old_scripts
+# OAuth credentials and local secrets
+creds/old_scripts/
+creds/old_secrets/
 old/
 **/token.json
 **/client_secret*.json
 **/*secret*.json
+ytdlp_cookies*.txt
 
-# Env
-.env*
+# Generated slideshow assets and sync state
+images/
+static/images/
+album.json
+static/album.json
+.drive_sync_index.json
+ops_backups/
+*.log
+*.pid
+*.sock
 
-# Python virtual environments
-venv/
-.env/
-.env*
+# Local workspace/editor files
+.codex/
+.vscode/
+.idea/
+.DS_Store
 
-# Bytecode
-__pycache__/
-*.pyc
-
-# Credentials (extra safety)
-# creds/
-old/
-**/token.json
-**/client_secret*.json
-
+# Local artifacts
+2025_hightower_1098.pdf
+/*.png
