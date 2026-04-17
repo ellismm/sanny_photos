@@ -206,6 +206,7 @@
       index: Number.isFinite(Number(base.index)) ? Number(base.index) : -1,
       track: base.track || null,
       ended: Boolean(base.ended),
+      loading: Boolean(base.loading),
       positionSeconds: Number.isFinite(Number(base.positionSeconds))
         ? Number(base.positionSeconds)
         : null,
@@ -2257,6 +2258,10 @@
       return false;
     }
 
+    if (status.loading) {
+      return false;
+    }
+
     if (Number(musicState.advanceLockUntil) > now()) {
       return false;
     }
@@ -2391,6 +2396,12 @@
       trackTitle = restarted.now && restarted.now.title ? restarted.now.title : trackTitle;
       status = normalizePlayerStatus(restarted.status || status);
       changedTrackLocally = true;
+    }
+
+    if (status.loading) {
+      localStatus = normalizePlayerStatus(status);
+      updateUi();
+      return;
     }
 
     if (await maybeAdvanceCompletedTrack(status)) {

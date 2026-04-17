@@ -31,6 +31,7 @@ class MPVPlayer:
         self.last_started_url = ""
         self.last_exit_code = None
         self.lock = threading.RLock()
+        self.loading_until = 0.0
 
         self.mpv_path = os.environ.get("SANNY_MPV_PATH") or shutil.which("mpv") or "/usr/bin/mpv"
         self.ytdlp_path = os.environ.get("SANNY_YTDLP_PATH") or shutil.which("yt-dlp") or "/usr/local/bin/yt-dlp"
@@ -47,6 +48,16 @@ class MPVPlayer:
         self.cache_max_files = 20
         self.volume_level = self._clamp_volume(os.environ.get("SANNY_MPV_VOLUME", "80"))
         self.audio_output = os.environ.get("SANNY_MPV_AUDIO_OUTPUT", "pulse").strip()
+        self.gapless_audio = os.environ.get("SANNY_MPV_GAPLESS_AUDIO", "yes").strip()
+        self.audio_stream_silence = os.environ.get("SANNY_MPV_AUDIO_STREAM_SILENCE", "yes").strip()
+        self.audio_samplerate = os.environ.get("SANNY_MPV_AUDIO_SAMPLERATE", "48000").strip()
+        self.audio_channels = os.environ.get("SANNY_MPV_AUDIO_CHANNELS", "stereo").strip()
+        self.audio_format = os.environ.get("SANNY_MPV_AUDIO_FORMAT", "s16").strip()
+        self.audio_buffer = os.environ.get("SANNY_MPV_AUDIO_BUFFER", "0.5").strip()
+        try:
+            self.load_guard_seconds = max(0.0, float(os.environ.get("SANNY_MPV_LOAD_GUARD_SECONDS", "6")))
+        except (TypeError, ValueError):
+            self.load_guard_seconds = 6.0
 
     def _track_key_for_url(self, track_url, fallback=""):
         candidate = str(track_url or "").strip()
@@ -105,6 +116,12 @@ class MPVPlayer:
     def _is_running(self):
         return self.process is not None and self.process.poll() is None
 
+    def _mark_loading(self):
+        self.loading_until = time.time() + self.load_guard_seconds
+
+    def _is_loading(self):
+        return self.loading_until > time.time()
+
     def _remove_stale_socket(self):
         try:
             if os.path.exists(self.ipc_socket_path):
@@ -149,13 +166,24 @@ class MPVPlayer:
             "--no-video",
             "--force-window=no",
             "--cache=yes",
+            "--idle=yes",
             "--ytdl=no",
+            f"--gapless-audio={self.gapless_audio}",
+            f"--audio-stream-silence={self.audio_stream_silence}",
             f"--volume={self.volume_level}",
             f"--input-ipc-server={self.ipc_socket_path}",
         ]
 
         if self.audio_output:
             cmd.append(f"--ao={self.audio_output}")
+        if self.audio_samplerate:
+            cmd.append(f"--audio-samplerate={self.audio_samplerate}")
+        if self.audio_channels:
+            cmd.append(f"--audio-channels={self.audio_channels}")
+        if self.audio_format:
+            cmd.append(f"--audio-format={self.audio_format}")
+        if self.audio_buffer:
+            cmd.append(f"--audio-buffer={self.audio_buffer}")
 
         if headers:
             user_agent = headers.get("User-Agent")
@@ -208,6 +236,31 @@ class MPVPlayer:
         self._safe_set_property("mute", self.is_muted)
         self._safe_set_property("volume", self.volume_level)
         self._safe_set_property("pause", self.is_paused)
+        self._mark_loading()
+
+    def _load_mpv_file(self, url):
+        if not self._is_running():
+            return False
+
+        self.last_error = ""
+        self.last_started_url = url
+        self.last_exit_code = None
+
+        try:
+            response = self._mpv_command("loadfile", url, "replace")
+            if response and response.get("error") not in (None, "success"):
+                raise RuntimeError(response["error"])
+        except Exception as exc:
+            self.last_error = f"Could not load next file into existing mpv process: {exc}"
+            logging.warning(self.last_error)
+            return False
+
+        # Keep local state authoritative after replacing the current file.
+        self._safe_set_property("mute", self.is_muted)
+        self._safe_set_property("volume", self.volume_level)
+        self._safe_set_property("pause", self.is_paused)
+        self._mark_loading()
+        return True
 
     def _mpv_ipc_request(self, payload):
         if not os.path.exists(self.ipc_socket_path):
@@ -432,7 +485,8 @@ class MPVPlayer:
             track = self.playlist[self.current_index]
             playback_url = self._download_track_file(track["url"])
 
-            self._start_mpv(playback_url)
+            if not self._load_mpv_file(playback_url):
+                self._start_mpv(playback_url)
 
             if self.last_error and not self._is_running():
                 raise RuntimeError(self.last_error)
@@ -509,6 +563,7 @@ class MPVPlayer:
             self.process = None
             self.is_paused = False
             self.last_exit_code = None
+            self.loading_until = 0.0
             self._remove_stale_socket()
             self._close_log_handle()
 
@@ -521,27 +576,40 @@ class MPVPlayer:
 
     def status(self):
         running = self._is_running()
+        loading = running and self._is_loading()
         ended = False
         position_seconds = None
         duration_seconds = None
+        loaded_path = None
+        idle_active = False
 
         if running:
             try:
                 paused = self._get_property("pause")
                 muted = self._get_property("mute")
-                position = self._get_property("time-pos")
-                duration = self._get_property("duration")
                 volume = self._get_property("volume")
+                idle_active = bool(self._get_property("idle-active"))
+                loaded_path = self._get_property("path")
                 if isinstance(paused, bool):
                     self.is_paused = paused
                 if isinstance(muted, bool):
                     self.is_muted = muted
-                if isinstance(position, (int, float)):
-                    position_seconds = float(position)
-                if isinstance(duration, (int, float)):
-                    duration_seconds = float(duration)
                 if isinstance(volume, (int, float)):
                     self.volume_level = self._clamp_volume(volume)
+
+                if idle_active and self.playlist:
+                    ended = True
+                    loading = False
+                elif self.last_started_url and loaded_path != self.last_started_url:
+                    loading = True
+
+                if not loading:
+                    position = self._get_property("time-pos")
+                    duration = self._get_property("duration")
+                    if isinstance(position, (int, float)):
+                        position_seconds = float(position)
+                    if isinstance(duration, (int, float)):
+                        duration_seconds = float(duration)
             except Exception as exc:
                 self.last_error = f"Could not query mpv status via IPC: {exc}"
                 logging.warning(self.last_error)
@@ -566,9 +634,12 @@ class MPVPlayer:
             "index": self.current_index if track else -1,
             "track": track,
             "ended": ended,
+            "loading": loading,
+            "idleActive": idle_active,
             "positionSeconds": position_seconds,
             "durationSeconds": duration_seconds,
             "lastError": self.last_error,
             "logPath": self.log_path,
             "startedUrl": self.last_started_url,
+            "loadedPath": loaded_path,
         }
